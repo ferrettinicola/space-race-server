@@ -8,10 +8,9 @@ const io         = new Server(httpServer, {
   cors: { origin: '*', methods: ['GET', 'POST'] }
 });
 
-const players    = {};      // giocatori online in questo momento
-const loginLog   = [];      // storico accessi (max 500, persiste finché server è acceso)
+const players    = {};
+const loginLog   = [];
 
-// ── Utility: estrae browser e OS dallo User-Agent ─────────────────
 function parseBrowser(ua) {
   if (!ua) return 'Sconosciuto';
   if (ua.includes('Edg/'))     return 'Edge';
@@ -31,38 +30,42 @@ function parseOS(ua) {
   return 'Altro';
 }
 
-// ── Health check ──────────────────────────────────────────────────
+// CORS — permette fetch dal browser (Netlify → Railway)
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  next();
+});
+
 app.get('/', (req, res) => {
   res.json({ status: 'ok', online: Object.keys(players).length });
 });
 
-// ── Endpoint admin: storico accessi ──────────────────────────────
-// Nessuna autenticazione (solo voi tre conoscete il link)
+// Chi è online adesso
+app.get('/admin/online', (req, res) => {
+  res.json(Object.values(players).map(p => p.username));
+});
+
+// Storico accessi
 app.get('/admin/logins', (req, res) => {
   res.json(loginLog);
 });
 
-// ── WebSocket ────────────────────────────────────────────────────
 io.on('connection', (socket) => {
   const ip = (socket.handshake.headers['x-forwarded-for'] || '').split(',')[0].trim()
              || socket.handshake.address;
   const ua = socket.handshake.headers['user-agent'] || '';
 
-  // Evento login: registra accesso
   socket.on('login_event', (data) => {
     const entry = {
       username:  data.username,
       timestamp: new Date().toISOString(),
-      ip:        ip,
-      browser:   parseBrowser(ua),
-      os:        parseOS(ua),
+      ip, browser: parseBrowser(ua), os: parseOS(ua),
     };
     loginLog.push(entry);
-    if (loginLog.length > 500) loginLog.shift(); // tieni solo gli ultimi 500
-    console.log(`[login] ${entry.username} — ${entry.browser} su ${entry.os} — IP ${entry.ip}`);
+    if (loginLog.length > 500) loginLog.shift();
+    console.log(`[login] ${entry.username} — ${entry.browser} su ${entry.os}`);
   });
 
-  // Giocatore entra in partita
   socket.on('join', (data) => {
     players[socket.id] = {
       id: socket.id, username: data.username, skin: data.skin,
@@ -70,6 +73,7 @@ io.on('connection', (socket) => {
     };
     socket.emit('players', players);
     socket.broadcast.emit('player_joined', players[socket.id]);
+    console.log(`[+] ${data.username} in partita. Online: ${Object.keys(players).length}`);
   });
 
   socket.on('update', (data) => {
@@ -94,12 +98,18 @@ io.on('connection', (socket) => {
   });
 
   socket.on('leave_game', () => {
-    delete players[socket.id];
+    if (players[socket.id]) {
+      console.log(`[-] ${players[socket.id].username} uscito`);
+      delete players[socket.id];
+    }
     io.emit('player_left', socket.id);
   });
 
   socket.on('disconnect', () => {
-    if (players[socket.id]) delete players[socket.id];
+    if (players[socket.id]) {
+      console.log(`[-] ${players[socket.id].username} disconnesso`);
+      delete players[socket.id];
+    }
     io.emit('player_left', socket.id);
   });
 });
